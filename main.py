@@ -1,29 +1,88 @@
-from site_parser import GatherByTag
+from site_parser import GatherByTag, ProcessPage
 from subprocess import run
 from os import listdir
+from time import localtime, asctime
 
 class DFSConfig():
     def __init__(self) -> None:
         self.inputFolder = "bot-in"
         self.outputFolder = "bot-out"
         self.resultsFolder = "bot-results"
+
         self.defaultSettings = {
-            "query": "any",
-            "depth": 1000,
-            "trunc": 10
+            "query":        "any",
+            "depth":        200,    # pages
+            "trunc":        10,
+            "updatetimer":  3600    # 1 hour
         }
 
+        self.sourceURL = "https://math.stackexchange.com/questions?tab=newest&pagesize=50&page="
+        self.lastQuestionId = ""
+        self.timeFormat = "%Y-%m-%dT%H:%M:%SZ"
+        self.lastUpdated = localtime()
+
+
+cfg = DFSConfig()
+
+def UpdateData(drop : bool = False) -> None:
+    global cfg
+    print(f"running database update, previous update time: {asctime(cfg.lastUpdated)}")
+    # reset local workspace
+    run(f"rm -rf {cfg.inputFolder} {cfg.outputFolder}", shell=True)
+    run(f"mkdir {cfg.inputFolder}", shell=True)
+
+    print("querying source for posts")
+
+    batchFirst = None
+    stacks = {}
+    page = 1
+    getNext = True
+    while getNext and page <= cfg.defaultSettings["depth"]:
+        items = ProcessPage(cfg.sourceURL + str(page))
+        for post in items:
+            if batchFirst is None:
+                batchFirst = post.id
+            if post.id == cfg.lastQuestionId:
+                getNext = False
+                break
+            for tag in post.tags:
+                if stacks.get(tag) is None:
+                    stacks[tag] = []
+                stacks[tag].append(post.text)
+        page += 1
+
+    print(f"pulled {page} pages, reached last record")
+
+    if drop:
+        run(f"hdfs dfs -rm -r -f {cfg.inputFolder}", shell=True)
+
+    for tag in stacks.keys():
+        print(f"updating {cfg.inputFolder}/{tag}.data")
+        # create an update for dfs file
+        with open(f"{cfg.inputFolder}/{tag}.part", "w") as writer:
+                for text in stacks[tag]:
+                    writer.write(text + "\n")
+        # upload update; appendToFile creates file if it didn't exist
+        run(f"hdfs dfs -appendToFile {cfg.inputFolder}/{tag}.part {cfg.inputFolder}/{tag}.data", shell=True)
+
+    cfg.lastQuestionId = batchFirst
+    cfg.lastUpdated = localtime()
+    print("update complete")
 
 def main():
-
-    cfg = DFSConfig()
+    global cfg
 
     # setup folders
     run(f"mkdir -p {cfg.inputFolder} {cfg.outputFolder} {cfg.resultsFolder}", shell=True)
     run(f"hdfs dfs -mkdir -p {cfg.inputFolder} {cfg.outputFolder}", shell=True)
 
+    # run full reset update on entry
+    UpdateData(drop=True)
+
     exit_ = False
     while not exit_:
+
+        # passively update every so often
 
         # await task
         command = input("[input@bot]~$ ")
@@ -33,53 +92,29 @@ def main():
             continue
     
         if command == "help":
-            print("stop execution : exit")
-            print("exec wordcount : wordcount [search-depth] [question-tag] OR wc [search-depth] [question-tag]")
-        
+            print("stop execution  : exit")
+            print("update database : update")
+            print("exec wordcount  : wordcount [search-depth] [question-tag] OR wc [search-depth] [question-tag]")
+
+        if command == "update":
+            UpdateData()
+
         if command[:9] == "wordcount" or command[:2] == "wc":
             args = command.split()
-            query, depth = cfg.defaultSettings["query"], cfg.defaultSettings["depth"]
-            try:
-                depth = int(args[1])
-                query = args[2]
-            except Exception:
-                print("wrong argument values, expected int, string")
-            
-            possibleName = f"{query}-{depth}.result"
-            if possibleName in listdir("bot-results"):
-                print(f"some results are already stored in {possibleName}")
-                inp = ""
-                allowed = ["y", "n", "yes", "no"]
-                while inp.lower() not in allowed:
-                    inp = input("would you like to update results now (y/n): ")
-                if inp in ["n", "no"]:
-                    continue
-                print("updating now")
-
-            texts = GatherByTag(query, depth)
-            if len(texts) <= 5:
-                print(f"too few questions found ({len(texts)}) try increasing search depth")
+            query = cfg.defaultSettings["query"]
+            if len(args != 2):
+                print("wrong command expected wordcount (query) or wc (query)")
                 continue
-            print(f"found ({len(texts)}) questions, creating mapred task")
-
+                #query = args[1]
+            
             # reset local workspace
-            run(f"rm -rf {cfg.inputFolder} {cfg.outputFolder}", shell=True)
-            run(f"mkdir {cfg.inputFolder}", shell=True)
-
-            # create a file with current task
-            with open(f"{cfg.inputFolder}/{query}.task", "w") as writer:
-                for text in texts:
-                    writer.write(text)
+            run(f"rm -rf{cfg.outputFolder}", shell=True)
             
             # reset worspace
-            run(f"hdfs dfs -rm -r -f {cfg.inputFolder} {cfg.outputFolder}", shell=True)
-            run(f"hdfs dfs -mkdir -p {cfg.inputFolder}", shell=True)
-
-            # upload task to hdfs
-            run(f"hdfs dfs -put {cfg.inputFolder}/{query}.task {cfg.inputFolder}", shell=True)
+            run(f"hdfs dfs -rm -r -f{cfg.outputFolder}", shell=True)
 
             # run mapred task
-            run(f'mapred streaming -input {cfg.inputFolder}/{query}.task -output {cfg.outputFolder} -mapper "python3 mapper.py" -reducer "python3 reducer.py" -file mapper.py -file reducer.py', shell=True)
+            run(f'mapred streaming -input {cfg.inputFolder}/{query}.data -output {cfg.outputFolder} -mapper "python3 mapper.py" -reducer "python3 reducer.py" -file mapper.py -file reducer.py', shell=True)
 
             # download result
             run(f'hdfs dfs -get {cfg.outputFolder} {cfg.outputFolder}', shell=True)
@@ -91,7 +126,7 @@ def main():
                     with open(f"bot-out/{filename}", "r") as reader:
                         lines.extend(reader.readlines())
             
-            with open(f"{cfg.resultsFolder}/{query}-{depth}.result", "w") as writer:
+            with open(f"{cfg.resultsFolder}/{query}.result", "w") as writer:
                 for line in lines:
                     writer.write(line)
 
