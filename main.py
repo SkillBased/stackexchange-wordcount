@@ -1,17 +1,26 @@
 from site_parser import GatherByTag
 from subprocess import run
+from os import listdir
 
-TMPDIR = "bot-temporary"
-RESDIR = "bot-results"
+class DFSConfig():
+    def __init__(self) -> None:
+        self.inputFolder = "bot-in"
+        self.outputFolder = "bot-out"
+        self.resultsFolder = "bot-results"
+        self.defaultSettings = {
+            "query": "",
+            "depth": 1000,
+            "trunc": 10
+        }
 
-DEFAULTQUERY = ""
-DEFAULTDEPTH = 5000
 
 def main():
 
-    # reset results on startup
-    run(f"rm -rf ./{RESDIR}")
-    run(f"mkdir ./{RESDIR}")
+    cfg = DFSConfig()
+
+    # setup folders
+    run(f"mkdir -p {cfg.inputFolder} {cfg.outputFolder}, {cfg.resultsFolder}", shell=True)
+    run(f"hdfs dfs -mkdir -p {cfg.inputFolder} {cfg.outputFolder}", shell=True)
 
     exit_ = False
     while not exit_:
@@ -29,7 +38,7 @@ def main():
         
         if command[:9] == "wordcount" or command[:2] == "wc":
             args = command.split()
-            query, depth = DEFAULTQUERY, DEFAULTDEPTH
+            query, depth = cfg.defaultSettings["query"], cfg.defaultSettings["depth"]
             try:
                 depth = int(args[1])
                 query = args[2]
@@ -42,32 +51,46 @@ def main():
                 continue
             print(f"found ({len(texts)}) questions, creating mapred task")
 
+            # reset local workspace
+            run(f"rm -rf {cfg.inputFolder} {cfg.outputFolder}", shell=True)
+            run(f"mkdir {cfg.inputFolder}", shell=True)
+
             # create a file with current task
-            with open(f"{TMPDIR}/{query}.task", "w") as writer:
+            with open(f"{cfg.inputFolder}/{query}.task", "w") as writer:
                 for text in texts:
                     writer.write(text)
             
-            # reset hdfs workspace
-            run(f'hdfs dfs -rm -r {TMPDIR} {RESDIR}')
+            # reset worspace
+            run(f"hdfs dfs -rm -r -f {cfg.inputFolder} {cfg.outputFolder}", shell=True)
+            run(f"hdfs dfs -mkdir -p {cfg.inputFolder}", shell=True)
+
             # upload task to hdfs
-            run(f'hdfs dfs -copyFromLocal {TMPDIR}/{query}.task {TMPDIR}')
+            run(f"hdfs dfs -put {cfg.inputFolder}/{query}.task {cfg.inputFolder}", shell=True)
+
             # run mapred task
-            mapredTask = f"""
-            yarn jar /usr/lib/hadoop-mapreduce/hadoop-streaming.jar\ 
-            -input {TMPDIR}\ 
-            -output {RESDIR}\ 
-            -file mapper.py\ 
-            -file reducer.py\ 
-            -mapper "python mapper.py"\ 
-            -reducer "python reducer.py"
-            """
-            run(mapredTask)
+            run(f'mapred streaming -input {cfg.inputFolder}/{query}.task -output {cfg.outputFolder} -mapper "python3 mapper.py" -reducer "python 3 reducer.py" -file mapper.py -file reducer.py', shell=True)
+
             # download result
-            run(f'hdfs dfs -copyToLocal {RESDIR}')
+            run(f'hdfs dfs -get {cfg.outputFolder} {cfg.outputFolder}', shell=True)
 
-            print("task completed, look for results locally")
+            # assemble response
+            lines = []
+            for filename in listdir("bot-out"):
+                if filename[:5] == "part-":
+                    with open(filename, "r") as reader:
+                        lines.extend(reader.readlines().strip().split("\n"))
             
+            with open(f"{cfg.resultsFolder}/{query}.result", "w") as writer:
+                for line in lines:
+                    writer.write(line + "\n")
 
+            print(f"task completed, look for results locally in {cfg.resultsFolder}/{query}.result")
+            print(f"head of {query}.result reads:")
+            for i in range(cfg.defaultSettings["trunc"]):
+                print(lines[i])
+            
+if __name__ == "__main__":
+    main()
 
 
 
