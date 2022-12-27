@@ -8,7 +8,7 @@ class DFSConfig():
         self.outputFolder = "bot-out"
         self.resultsFolder = "bot-results"
         self.defaultSettings = {
-            "query": "",
+            "query": "any",
             "depth": 1000,
             "trunc": 10
         }

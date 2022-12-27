@@ -46,7 +46,7 @@ def GatherByTag(filterTag : str, scanDepth : int = 1000) -> List[str]:
         for question in ProcessPage(pageURL):
             if counter >= scanDepth:
                 break
-            if filterTag in question.tags or filterTag == "":
+            if filterTag in question.tags or filterTag == "any":
                 filtered.append(question.text)
             counter += 1
         pageNumber += 1
