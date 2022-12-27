@@ -51,12 +51,12 @@ def UpdateData(drop : bool = False) -> None:
                 stacks[tag].append(post.text)
         page += 1
 
-    print(f"pulled {page} pages, reached last record")
+    print(f"pulled {page-1} pages, reached last record")
 
     if drop:
         run(f"hdfs dfs -rm -r -f {cfg.inputFolder}", shell=True)
 
-    for tag in stacks.keys():
+    for tag in sorted(stacks.keys()):
         print(f"updating {cfg.inputFolder}/{tag}.data")
         # create an update for dfs file
         with open(f"{cfg.inputFolder}/{tag}.part", "w") as writer:
@@ -64,6 +64,7 @@ def UpdateData(drop : bool = False) -> None:
                     writer.write(text + "\n")
         # upload update; appendToFile creates file if it didn't exist
         run(f"hdfs dfs -appendToFile {cfg.inputFolder}/{tag}.part {cfg.inputFolder}/{tag}.data", shell=True)
+        run(f"hdfs dfs -appendToFile {cfg.inputFolder}/{tag}.part {cfg.inputFolder}/any.data", shell=True)
 
     cfg.lastQuestionId = batchFirst
     cfg.lastUpdated = localtime()
@@ -94,7 +95,7 @@ def main():
         if command == "help":
             print("stop execution  : exit")
             print("update database : update")
-            print("exec wordcount  : wordcount [search-depth] [question-tag] OR wc [search-depth] [question-tag]")
+            print("exec wordcount  : wordcount [question-tag] OR wc [question-tag]")
 
         if command == "update":
             UpdateData()
@@ -102,16 +103,17 @@ def main():
         if command[:9] == "wordcount" or command[:2] == "wc":
             args = command.split()
             query = cfg.defaultSettings["query"]
-            if len(args != 2):
+            if len(args > 2):
                 print("wrong command expected wordcount (query) or wc (query)")
                 continue
-                #query = args[1]
+            else:
+                query = args[1]
             
             # reset local workspace
-            run(f"rm -rf{cfg.outputFolder}", shell=True)
+            run(f"rm -rf {cfg.outputFolder}", shell=True)
             
             # reset worspace
-            run(f"hdfs dfs -rm -r -f{cfg.outputFolder}", shell=True)
+            run(f"hdfs dfs -rm -r -f {cfg.outputFolder}", shell=True)
 
             # run mapred task
             run(f'mapred streaming -input {cfg.inputFolder}/{query}.data -output {cfg.outputFolder} -mapper "python3 mapper.py" -reducer "python3 reducer.py" -file mapper.py -file reducer.py', shell=True)
